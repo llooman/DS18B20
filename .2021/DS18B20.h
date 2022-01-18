@@ -1,8 +1,4 @@
 /*
- 2022-01-17 refactor to MyTimer
-			todo: check staticLockTimer to minimize the risk one DS can lock other DS on the same line
-
-
  2020-05-23 refactor add staticLockId
  
  2020-05-18 refactor to myTimers
@@ -69,23 +65,16 @@
 #define ERR_DS18B20_MAX_TEMP		-37
 #define ERR_DS18B20_MIN_TEMP		-38
 #define ERR_DS18B20_DELTA_TEMP		-39
-#define ERR_DEVICE_NOT_FOUND		-40
+
  
 #include <Arduino.h> 
 #include <inttypes.h>
-#include <MyTimers.h>
 #include <OneWire.h>
 #include <avr/pgmspace.h>
 
 
-// static unsigned long staticLockTimer = 0; // prevent conflicts with other DS18B20 on the same pin
+static unsigned long staticLockTimer = 0; // prevent conflicts with other DS18B20 on the same pin
 static int           staticLockId = 0;
-
-static const int ROMSize2 = 8;
-struct rom_address_t2 {
-	uint8_t rom[ROMSize2];
-};
-
 //const byte ds00[] PROGMEM = {0x00};
 
 //const byte ds01[] PROGMEM = {0x28, 0x80, 0x7e, 0x00, 0x05, 0x00, 0x00, 0x0e};
@@ -132,104 +121,16 @@ struct rom_address_t2 {
 //const byte ds113[] PROGMEM = {0x28, 0xff, 0x94, 0x31, 0x85, 0x16, 0x05, 0x09}; //addr: 28 FF 94 31 85 16 5 9
 //const byte ds114[] PROGMEM = {0x28, 0xff, 0xff, 0x36, 0xa0, 0x16, 0x05, 0x4f}; //addr: 28 FF FF 36 A0 16 5 4F
 
-// const byte tst30[] PROGMEM = {0x28, 0xbf, 0x8e, 0xf3, 0x1f, 0x13, 0x01, 0x5f}; //28 BF 8E F3 1F 13 1 5F
-// const byte tst32[] PROGMEM = {0x28, 0xff, 0xaf, 0xe7, 0x6e, 0x18, 0x01, 0x4e}; //28 FF AF E7 6E 18 1 4E  
+#define DS18B20_TIMER_COUNT 3
+#define DS18B20_TIMER_REQUEST 0
+#define DS18B20_TIMER_READ 1
+#define DS18B20_TIMER_UPLOAD 2
 
-
-
-#define DS18B20_TIMER_COUNT 4
-#define DS18B20_TIMER_READ 0
-#define DS18B20_TIMER_UPLOAD 1
-#define DS18B20_TIMER_REQUEST 2
-#define DS18B20_TIMER_RESET_STATIC 3
-
-#ifndef ARDUINO_ARCH_RP2040
-
-class DS18B20: public OneWire, public MyTimers
+class DS18B20: public OneWire
 {
 public:
-	DS18B20(int pin) : OneWire(pin), MyTimers(DS18B20_TIMER_COUNT)
-	{
-		_pin = pin;
-		addr[0] = 0x00;
-		setup( );
-	}
-	DS18B20(int pin, int ID) : OneWire(pin), MyTimers(DS18B20_TIMER_COUNT)
-	{
-		_pin = pin;
-		id = ID;
-		addr[0] = 0x00;
-		setup( );
-	}
+ 	unsigned long 	timers[DS18B20_TIMER_COUNT];
 
-	DS18B20(int pin, const byte addres[8]) : OneWire(pin), MyTimers(DS18B20_TIMER_COUNT) // a 4.7K resistor is necessary for 2 wire power steal
-	{
-		_pin = pin;
-		setup( );
-		for(int i = 0; i < 8; i++) this->addr[i] = pgm_read_word_near(addres +i);
-		initAdress = true;
-		fixedAddr = true;
-	}
-
-	DS18B20(int pin, const byte addres[8], int ID) : OneWire(pin), MyTimers(DS18B20_TIMER_COUNT)   // a 4.7K resistor is necessary for 2 wire power steal
-	{
-		_pin = pin;
-		id = ID;
-		setup( );
-		for(int i = 0; i < 8; i++) this->addr[i] = pgm_read_word_near(addres +i);
-		initAdress = true;
-		fixedAddr = true;
-	}
-
-#else
-
-class DS18B20   
-{
-public:
-	DS18B20(int pin)  : MyTimers(DS18B20_TIMER_COUNT) 
-	{
-		_pin = pin;
-		setupPin();
-		addr[0] = 0x00;
-		setup( );
-	}
-	DS18B20(int pin, int ID)   : MyTimers(DS18B20_TIMER_COUNT)
-	{
-		_pin = pin;
-		setupPin();
-		id = ID;
-		addr[0] = 0x00;
-		setup( );
-	}
-
-	DS18B20(int pin, const byte addres[8])  : MyTimers(DS18B20_TIMER_COUNT)    // a 4.7K resistor is necessary for 2 wire power steal
-	{
-		_pin = pin;
-		setupPin();
-		setup( );
-		for(int i = 0; i < 8; i++) this->addr[i] = pgm_read_word_near(addres +i);
-		initAdress = true;
-		fixedAddr = true;
-	}
-
-	DS18B20(int pin, const byte addres[8], int ID)  : MyTimers(DS18B20_TIMER_COUNT)   // a 4.7K resistor is necessary for 2 wire power steal
-	{
-		_pin = pin;
-		setupPin();
-		id = ID;
-		setup( );
-		for(int i = 0; i < 8; i++) this->addr[i] = pgm_read_word_near(addres +i);
-		initAdress = true;
-		fixedAddr = true;
-	}
-
-#endif
-
-	~DS18B20()
-	{
-		//delete _OneWire;
-	}			// release memory
- 
 	int 			id=0;
 
 	int 			temp = TEMP_NOT_SET;    // in 1/100 graden
@@ -237,26 +138,75 @@ public:
 	int 			tempUploaded = 0;
 	unsigned long 	timeStamp = 0;
 
+	// int 			retCode = -1;
 	int 			errorCnt = 3;		
 
-    int  			lastError=0;
+    volatile int  	lastError=0;
     int 			lastErrorUploaded = lastError;
 
 	int 			deltaTempMax = 1000; 		// 0 = inactive, when the temp change is > delatTempMax we assume its an error
 	int 			tempMax	= TEMP_NOT_SET;  	// + 100 C
 	int 			tempMin = TEMP_NOT_SET;  	// -10 C
 
-	int				sensorFrequency_s = 9;
+	int				sensorFrequency_s = 21;
 	int				uploadFrequency_s = 60;
+
+	// int 			readInterval_s = 5;   // default sence every 2 * 7 sec
+
+	// unsigned long 	readStart;
+
+	// used by wpomp
+	// bool 		valid = false;
+	// bool		updated = false;
+
+	// uint8_t 		uploadInterval_s = 58;   // default sence every 60 sec
+
 
 	byte 			addr[8];
 	bool			fixedAddr = false;
 	bool 			initAdress = false;
+
 	bool 			async = true;
 
-	void setupPin(){
-		pinMode(_pin, INPUT);
+
+
+	DS18B20(int pin) : OneWire(pin)
+	{
+		_pin = pin;
+		addr[0] = 0x00;
+		setup( );
 	}
+	DS18B20(int pin, int ID) : OneWire(pin)
+	{
+		_pin = pin;
+		id = ID;
+		addr[0] = 0x00;
+		setup( );
+	}
+
+	DS18B20(int pin, const byte addres[8]) : OneWire(pin)  // a 4.7K resistor is necessary for 2 wire power steal
+	{
+		_pin = pin;
+		setup( );
+		for(int i = 0; i < 8; i++) this->addr[i] = pgm_read_word_near(addres +i);
+		initAdress = true;
+		fixedAddr = true;
+	}
+
+	DS18B20(int pin, const byte addres[8], int ID) : OneWire(pin)  // a 4.7K resistor is necessary for 2 wire power steal
+	{
+		_pin = pin;
+		id = ID;
+		setup( );
+		for(int i = 0; i < 8; i++) this->addr[i] = pgm_read_word_near(addres +i);
+		initAdress = true;
+		fixedAddr = true;
+	}
+
+	~DS18B20()
+	{
+		//delete _OneWire;
+	}			// release memory
 
 	void setup( )
 	{
@@ -264,72 +214,12 @@ public:
 		prevTemp 	 = TEMP_NOT_SET;
 		tempUploaded = TEMP_NOT_SET;
 
+		staticLockTimer = 0;
 		staticLockId = 0;
 
-		nextTimerMillis(DS18B20_TIMER_REQUEST, 500);
+		initTimers(DS18B20_TIMER_COUNT);
 	}
 
-	void setup(int senseInterval, int resolution )
-	{
-		temp 		 = TEMP_NOT_SET;
-		prevTemp 	 = TEMP_NOT_SET;
-		tempUploaded = TEMP_NOT_SET;
-
-		staticLockId = 0;
-		setResolution(resolution);
-		setSenseInterval(senseInterval );
-		nextTimerMillis(DS18B20_TIMER_REQUEST, 500);
-	}
-
-	void setup(int (*upFunction)(int id, long val, unsigned long timeStamp), int id, int (*errFunction)(int id, long val ), int senseInterval, int resolution )
-	{
-		temp 		 = TEMP_NOT_SET;
-		prevTemp 	 = TEMP_NOT_SET;
-		tempUploaded = TEMP_NOT_SET;
-
-		this->id = id;
-		staticLockId = 0;
-		uploadFunc = upFunction;
-		errorFunc = errFunction;
-		setResolution(resolution);
-		setSenseInterval(senseInterval );
-
-		nextTimerMillis(DS18B20_TIMER_REQUEST, 500);
-	}
-
-	void setup(int (*upFunction)(int id, long val, unsigned long timeStamp), int id, int (*errFunction)(int id, long val ) )
-	{
-		temp 		 = TEMP_NOT_SET;
-		prevTemp 	 = TEMP_NOT_SET;
-		tempUploaded = TEMP_NOT_SET;
-
-		this->id = id;
-		staticLockId = 0;
-		uploadFunc = upFunction;
-		errorFunc = errFunction;
-		
-		nextTimerMillis(DS18B20_TIMER_REQUEST, 500);
-	}
-
-	void setup(int (*upFunction)(int id, long val, unsigned long timeStamp), int id, int (*errFunction)(int id, long val ) , int senseInterval )
-	{
-		temp 		 = TEMP_NOT_SET;
-		prevTemp 	 = TEMP_NOT_SET;
-		tempUploaded = TEMP_NOT_SET;
-
-		this->id = id;
-		staticLockId = 0;
-		uploadFunc = upFunction;
-		errorFunc = errFunction;
- 
-		setSenseInterval(senseInterval );
-
-		nextTimerMillis(DS18B20_TIMER_REQUEST, 500);
-	}
-
-	// void debug(void){
-	// 	OneWire::debug();
-	// }
 
 	int (*uploadFunc) (int id, long val, unsigned long timeStamp) = 0;
     void onUpload( int (*function)(int id, long val, unsigned long timeStamp) )
@@ -348,6 +238,15 @@ public:
     {
     	errorFunc = function;
     }
+
+	void initTimers(int count);
+	bool isTime( int id);
+	bool isTimerActive( int id );
+	bool isTimerInactive( int id );
+	void nextTimer( int id){ nextTimerMillis(id, sensorFrequency_s * 1000L );}	
+	void nextTimer( int id, int periode){ nextTimerMillis(id, periode * 1000L );}	
+	void nextTimerMillis( int id, unsigned long periode);
+	void timerOff( int id );
 
     bool loop(void);
 	// void loop(int retries);
@@ -368,32 +267,8 @@ public:
 	int getGraden();
 	float getCelcius();
 
-	bool resetDevice(void);
-	void selectAddress(const uint8_t addr[8]);
-	void write(uint8_t data);
-	uint8_t read(void);
-	uint8_t crc8(const uint8_t *addr, uint8_t len);
-
 	void trace(void);
 	void trace(const char sensorId[]);
-
-
-	#ifdef ARDUINO_ARCH_RP2040
-	// static uint8_t crc_byte(uint8_t crc, uint8_t byte);
-
-	static rom_address_t2 &get_address(int index);
-
-	bool search_rom_find_next();
-
-	[[nodiscard]] bool onewire_bit_in() const;
-	uint8_t onewire_byte_in();
-
-	void onewire_bit_out(bool bit_data) const;
-	void onewire_byte_out(uint8_t data);
- 
-	#endif
-
-
 
 private:
 	void setErrorCnt(bool);

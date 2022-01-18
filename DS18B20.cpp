@@ -27,9 +27,9 @@ bool DS18B20::loop(void)  //  0 when nothing changed,
 //  1 when a new valid value was found.
 //   < 0 error -1 when an error occurred
 {
-	if( isTime2(DS18B20_TIMER_UPLOAD)){
+	if( isTime(DS18B20_TIMER_UPLOAD)){
 		// Serial.print(F("upload")); Serial.println(id);
-		// nextTimer2(DS18B20_TIMER_UPLOAD, uploadFrequency_s);
+		// nextTimer(DS18B20_TIMER_UPLOAD, uploadFrequency_s);
 		upload() ;
 	} else if( errorFunc!=0
 	 && lastError!=lastErrorUploaded
@@ -51,42 +51,25 @@ bool DS18B20::loop(void)  //  0 when nothing changed,
 	}
 
 
-	// release lock after 3 seconds. Skip to next
+	// release lock after 1.2 seconds. Skip to next
 	if( id != 0
 	 && staticLockId == id 
-	 && millis() > staticLockTimer + 1200
-	 && ( millis() > staticLockTimer + 1200 ? millis()-staticLockTimer + 1200 : staticLockTimer + 1200-millis()) < 0x0fffffff 
+	 && isTime(DS18B20_TIMER_RESET_STATIC)
 	){
-		Serial.print(F("reset staticReadTimer")); Serial.println(id);
-		staticLockTimer = 0;
-		staticLockId = 0;
-		// readStart = 0;
-
 		timerOff(DS18B20_TIMER_READ);
-		// nextTimer2(DS18B20_TIMER_TST , sensorFrequency_s);
-		nextTimer2(DS18B20_TIMER_REQUEST, sensorFrequency_s);
+ 		nextTimer(DS18B20_TIMER_REQUEST, sensorFrequency_s);
+
+		Serial.print(F("reset staticReadTimer")); Serial.println(id);
+		staticLockId = 0;
+		timerOff(DS18B20_TIMER_RESET_STATIC);
 
 		lastError = ERR_DS18B20_STATIC_TIMER_RELEASED;
-
-		// #ifdef DEBUG
-				Serial.println(F("reset staticReadTimer"));
-		// #endif
 	}
 
- 	// return false;
  
 
-	if( isTime2( DS18B20_TIMER_REQUEST))
+	if( isTime( DS18B20_TIMER_REQUEST))
 	{ 
-		// Serial.print(F("timerId:"));     Serial.println(DS18B20_TIMER_REQUEST);
-		
-	// } 
-	 	
- 
-	// if( (errorCnt < 1 && (millis() % 7000) == 500 )
-	//  || (errorCnt > 0 && (millis() % 3000) == 400 && errorCnt < 3 )
-	//  || (errorCnt > 2 && (millis() % 60000) == 300  )
-	// ){
 		int retCode =   requestTemp();
 
 		#ifdef DEBUG
@@ -99,8 +82,7 @@ bool DS18B20::loop(void)  //  0 when nothing changed,
 			lastError = retCode;
 			if(errorCnt<58) errorCnt++;
 
-			// nextTimer2(DS18B20_TIMER_TST, 2+errorCnt);
-			nextTimer2(DS18B20_TIMER_REQUEST, 2 + errorCnt );
+			nextTimer(DS18B20_TIMER_REQUEST, 2 + errorCnt );
 
 			#ifdef DEBUG
 				Serial.print(F("req err=")); Serial.println(retCode);
@@ -108,31 +90,33 @@ bool DS18B20::loop(void)  //  0 when nothing changed,
 
 		} else {
 
-			// readStart = millis();
-			nextTimer2(DS18B20_TIMER_REQUEST,  sensorFrequency_s);//,  sensorFrequency_s  );
+			nextTimer(DS18B20_TIMER_REQUEST,  sensorFrequency_s); 
 
 			if(async)
 			{
-				nextTimerMillis2(DS18B20_TIMER_READ, readDelay_ms);
+				nextTimerMillis(DS18B20_TIMER_READ, readDelay_ms);
+
+				staticLockId = id;
+				nextTimerMillis(DS18B20_TIMER_RESET_STATIC, readDelay_ms + 1200); 
 			}
 			else
 			{
 				delay(readDelay_ms);
-				nextTimerMillis2(DS18B20_TIMER_READ, 0);
+				nextTimerMillis(DS18B20_TIMER_READ, 0);
 			}
 			
-			// staticLockId = id;
-			// staticLockTimer = timers2[DS18B20_TIMER_READ]; //readTimer;	// lock the library by this instance
+
 		}
 		return false;
 	}
 
- 
-
-	if( isTime2(DS18B20_TIMER_READ)
+	if( isTime(DS18B20_TIMER_READ)
 	){
-		timerOff(DS18B20_TIMER_READ);
 		int retCode = readTemp();
+
+		timerOff(DS18B20_TIMER_READ);
+		staticLockId = 0;
+		timerOff(DS18B20_TIMER_RESET_STATIC);
 
 		#ifdef DEBUG
 			Serial.print(F("@")); Serial.print( millis());   
@@ -140,18 +124,13 @@ bool DS18B20::loop(void)  //  0 when nothing changed,
 			Serial.print(F("temp="));   Serial.println(temp);
 			Serial.print(F("prevTemp="));   Serial.println(prevTemp);
 		#endif
-
-
-		// staticLockTimer = 0;	// release library lock
-		// staticLockId = 0;
-
+ 
 		if(retCode<0){
 
 			lastError = retCode;
 			if(errorCnt<58) errorCnt++;
 
-			// nextTimer2(DS18B20_TIMER_TST, 2+errorCnt);
-			nextTimer2(DS18B20_TIMER_REQUEST, 2+errorCnt);
+			nextTimer(DS18B20_TIMER_REQUEST, 2+errorCnt);
 
 			if(!fixedAddr ) initAdress = false; //searchAdres(false);	// here we re-try to get an address
 
@@ -160,8 +139,6 @@ bool DS18B20::loop(void)  //  0 when nothing changed,
 			timeStamp = millis();
 			errorCnt = 0;
 
-			// nextTimer2(DS18B20_TIMER_TST );
-			// nextTimer2(DS18B20_TIMER_REQUEST,5 );
 			return true;
 		}
 	}
@@ -327,13 +304,12 @@ int DS18B20::readTemp()   // set temp (C *100), errorCnt ret 1=ok <0= error
 
 	if(temp != tempUploaded){
 
-		nextTimer2( DS18B20_TIMER_TST, 7);
-		nextTimer2(DS18B20_TIMER_REQUEST, 7);
+		nextTimer(DS18B20_TIMER_REQUEST, 7);
 
 		// prevent klepperen tussen 1 graad verschil
 		int delta =  temp>tempUploaded ? temp-tempUploaded : tempUploaded-temp;
 		if( delta >= 100 ){
-			nextTimer2( DS18B20_TIMER_UPLOAD, 0);		
+			nextTimer( DS18B20_TIMER_UPLOAD, 0);		
 		}
 	} 
 
@@ -343,7 +319,7 @@ int DS18B20::readTemp()   // set temp (C *100), errorCnt ret 1=ok <0= error
 
 void DS18B20::upload()
 {
-	nextTimer2(DS18B20_TIMER_UPLOAD, uploadFrequency_s);
+	nextTimer(DS18B20_TIMER_UPLOAD, uploadFrequency_s);
 
 	if( uploadFunc==0
 	 || errorCnt >= 3 ) return;
@@ -393,17 +369,13 @@ void DS18B20::trace(const char*  id  )
 	Serial.print(F("C"));
 	// if(valid)Serial.print(F("&"));else Serial.print(F("X"));
 	Serial.print(F(", temp="));	Serial.print( temp);
-	// Serial.print(F(", rqTmr="));	Serial.print(requestTimer/1000L);
+ 
 	Serial.print(F(", errorCnt="));	Serial.print(errorCnt);
 	Serial.print(F(", lastError="));	Serial.print(lastError);
 	Serial.print(F(", async="));	Serial.print(async);
+	Serial.print(F(", lock="));	Serial.print(staticLockId);
 
-	
-	Serial.print(F(", req@="));	Serial.print( timers2[DS18B20_TIMER_REQUEST]/1000   );
-
-
-
-//	Serial.print(F(", nextUpl="));	Serial.print( uploadTimer/1000L);
+	Serial.print(F(", nxtReq@="));	Serial.print( timers[DS18B20_TIMER_REQUEST]/1000   );
 
 	Serial.print(F(", "));
 
@@ -426,45 +398,7 @@ void DS18B20::printAdres( )
 	}
 	Serial.println();
 }
-
-void DS18B20::initTimers(int count)
-{
-	for(int i=0; i<count; i++){
-		timers2[i]=0L;
-	}
-	nextTimerMillis2(DS18B20_TIMER_REQUEST, 500);
-}
-
-// bool DS18B20::isTime( int id){
-// 	if(timers2[id] == 0L) return false;
-
-// 	if( millis() > timers2[id]) return true;
-// 	return (timers2[id] -  millis() ) >  0x0fffffff;  
-// }
-bool DS18B20::isTime2( int id){
-	if(timers2[id] == 0L) return false;
-
-	unsigned long delta = millis() > timers2[id] ? millis() - timers2[id] : timers2[id] - millis() ;
-	return delta > 0x0fffffff ? false : millis() >= timers2[id];
-}
-
-bool DS18B20::isTimerActive( int id ){
-	return timers2[id] > 0;
-}
-bool DS18B20::isTimerInactive( int id ){
-	return timers2[id] == 0;
-}
-void DS18B20::timerOff( int id ){
-	timers2[id]=0;
-}
-
-void DS18B20::nextTimerMillis2( int id, unsigned long periode){
-
-	if(periode<0) periode=0;
-	timers2[id] = millis() + periode;
-	if(timers2[id]==0) timers2[id]=1;
-}
-
+ 
 void DS18B20::searchAdres(boolean print)
 {
 	// Serial.println(F("reset_search"));
